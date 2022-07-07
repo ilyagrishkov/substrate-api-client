@@ -20,6 +20,8 @@ pub enum Error {
     RpcClient(String),
     #[error("ChannelReceiveError, sender is disconnected: {0}")]
     Disconnected(#[from] sp_std::sync::mpsc::RecvError),
+    #[error("Timeout error")]
+    Timeout,
     #[error("Metadata Error: {0:?}")]
     Metadata(MetadataError),
     #[error("InvalidMetadata: {0:?}")]

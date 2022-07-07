@@ -14,7 +14,9 @@
    limitations under the License.
 
 */
+use std::ops::Add;
 use std::sync::mpsc::{Receiver, SendError, Sender as ThreadOut};
+use std::time::{Duration, Instant};
 
 use ac_node_api::events::{EventsDecoder, Raw, RawEvent};
 use ac_primitives::ExtrinsicParams;
@@ -31,6 +33,7 @@ use crate::std::{Api, ApiResult};
 use crate::utils;
 
 pub use client::WsRpcClient;
+use crate::ApiClientError::Timeout;
 
 pub mod client;
 
@@ -121,6 +124,64 @@ where
 
         loop {
             let event_str = receiver.recv()?;
+            let _events = event_decoder.decode_events(&mut Vec::from_hex(event_str)?.as_slice());
+            info!("wait for raw event");
+            match _events {
+                Ok(raw_events) => {
+                    for (phase, event) in raw_events.into_iter() {
+                        info!("Decoded Event: {:?}, {:?}", phase, event);
+                        match event {
+                            Raw::Event(raw) if raw.pallet == module && raw.variant == variant => {
+                                return Ok(raw);
+                            }
+                            Raw::Error(runtime_error) => {
+                                error!("Some extrinsic Failed: {:?}", runtime_error);
+                            }
+                            _ => debug!("ignoring unsupported module event: {:?}", event),
+                        }
+                    }
+                }
+                Err(error) => error!("couldn't decode event record list: {:?}", error),
+            }
+        }
+    }
+
+    pub fn wait_for_event_timeout<E: Decode>(
+        &self,
+        module: &str,
+        variant: &str,
+        decoder: Option<EventsDecoder>,
+        receiver: &Receiver<String>,
+        timeout: Duration
+    ) -> ApiResult<E> {
+        let raw = self.wait_for_raw_event_timeout(module, variant, decoder, receiver, timeout)?;
+        E::decode(&mut &raw.data[..]).map_err(|e| e.into())
+    }
+
+    pub fn wait_for_raw_event_timeout(
+        &self,
+        module: &str,
+        variant: &str,
+        decoder: Option<EventsDecoder>,
+        receiver: &Receiver<String>,
+        timeout: Duration,
+    ) -> ApiResult<RawEvent> {
+        let event_decoder = match decoder {
+            Some(d) => d,
+            None => EventsDecoder::new(self.metadata.clone()),
+        };
+
+        let end = Instant::now().add(timeout);
+        loop {
+            let now = Instant::now();
+            if now >= end {
+                return Err(Timeout);
+            }
+            let current_timeout = end.duration_since(now);
+            let event_str = match receiver.recv_timeout(current_timeout) {
+                Ok(s) => s,
+                Err(_) => return Err(Timeout),
+            };
             let _events = event_decoder.decode_events(&mut Vec::from_hex(event_str)?.as_slice());
             info!("wait for raw event");
             match _events {
